@@ -1,0 +1,1 @@
+{"epoch_value_net": 9, "loss_value_net": 11920870.0, "_runtime": 14190, "_timestamp": 1620849182, "_step": 222, "batch_policy_network": 0, "loss_policy_network": 5718.99072265625, "policy_iteration": 14, "time_iteration": 892.0170593261719, "rec_met_mean": 0.5135866720562863, "rec_met_std": 0.005638072147984841}

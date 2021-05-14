@@ -1,0 +1,24 @@
+{
+    "os": "Linux-4.4.0-173-generic-x86_64-with-debian-stretch-sid",
+    "python": "3.7.10",
+    "heartbeatAt": "2021-05-13T16:04:45.958583",
+    "startedAt": "2021-05-13T16:04:44.893845",
+    "docker": null,
+    "gpu": "GeForce GTX 1080",
+    "gpu_count": 2,
+    "cpu_count": 8,
+    "cuda": "9.0.176",
+    "args": [],
+    "state": "running",
+    "program": "test.py",
+    "codePath": "test.py",
+    "git": {
+        "remote": "git@github.com:yl3469/RL-RideHailing.git",
+        "commit": "93e3c379524e5295fe6f3bc46b9adf6b013bea65"
+    },
+    "email": "yl3469@cornell.edu",
+    "root": "/home/yl3469/RL-RideHailing",
+    "host": "will-CSL--Desktop",
+    "username": "yl3469",
+    "executable": "/home/yl3469/anaconda3/envs/venv_gym/bin/python"
+}
