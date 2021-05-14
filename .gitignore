@@ -1,3 +1,4 @@
+wandb/**
 venv-rl/**
 .vscode/**
 __pycache__/**
