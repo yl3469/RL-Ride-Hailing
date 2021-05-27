@@ -3,7 +3,7 @@
 """
 Created on Sun Apr 11 10:28:28 2021
 
-@author: yujiazhang, yueyingli
+@author: yujiazhang
 """
 
 import gym
@@ -209,34 +209,6 @@ class RideHailingEnv(gym.Env):
             self.state['epoch'] += 1
             period = np.floor(self.state['epoch']/120).astype(int)
             
-            # put the do_nothings back to available cars pool
-            for i in range(self.R):
-                put_back = self.state['cars'][i]# + self.state['do_nothing'][i]
-                put_back[:(self.L+1)] += self.state['do_nothing'][i]
-                self.state['cars'][i] = copy.copy(put_back)
-                self.state['do_nothing'][i] = np.zeros(self.L+1)
-            
-            # set new SDM_clock countdown, reset origin
-            horizon = 0
-            for i in range(self.R):
-                horizon += np.sum(self.state['cars'][i, :(self.L+1)])
-            self.state['SDM_clock'] = copy.copy(horizon)
-            new_origin = 0
-            while np.sum(self.state['cars'][new_origin, :(self.L+1)]) == 0:
-                new_origin += 1
-            self.state['origin'] = min(new_origin, self.R-1)
-            
-            # decrease etas by 1
-            for i in range(self.R):
-                
-                old_num_cars = copy.copy(self.state['cars'][i])
-                #print('old number of cars :{}'.format(old_num_cars))
-               
-                new_cars = np.pad(old_num_cars[1:], (0, 1), 'constant')
-                new_cars[0] += old_num_cars[0]
-                self.state['cars'][i] = copy.copy(new_cars)
-            
-                
             # reset passenger matrix, count number of unfilled requests
             self.state['unfilled_requests'] += np.sum(self.state['passengers'])
             self.state['passengers'] = np.zeros((self.R, self.R))
@@ -248,6 +220,59 @@ class RideHailingEnv(gym.Env):
                     trips = np.random.multinomial(num_arrivals, self.P[period,i,:]).astype(int)
                     for j in range(self.R):
                         self.state['passengers'][i,j] += trips[j]
+            
+            # put the do_nothings back to available cars pool
+            for i in range(self.R):
+                put_back = self.state['cars'][i]# + self.state['do_nothing'][i]
+                put_back[:(self.L+1)] += self.state['do_nothing'][i]
+                self.state['cars'][i] = copy.copy(put_back)
+                self.state['do_nothing'][i] = np.zeros(self.L+1)
+
+            # decrease etas by 1 / move cars forward one step
+            for i in range(self.R):
+                
+                old_num_cars = copy.copy(self.state['cars'][i])
+               
+                new_cars = np.pad(old_num_cars[1:], (0, 1), 'constant')
+                new_cars[0] += old_num_cars[0]
+                self.state['cars'][i] = copy.copy(new_cars)
+            
+            # set new SDM_clock countdown, reset origin
+            horizon = 0
+            for i in range(self.R):
+                horizon += np.sum(self.state['cars'][i, :(self.L+1)])
+            self.state['SDM_clock'] = copy.copy(horizon) 
+            # EDGE CASE (very rare)
+            # If there are no available cars over all regions, we go to the next epoch, move 
+            # everybody forward one step, and sample new passengers; 
+            # keep doing this until there is at least one available car
+            while horizon == 0:
+                for i in range(self.R):
+                    # move cars forward one step
+                    old_num_cars = copy.copy(self.state['cars'][i])
+                    new_cars = np.pad(old_num_cars[1:], (0, 1), 'constant')
+                    new_cars[0] += old_num_cars[0]
+                    self.state['cars'][i] = copy.copy(new_cars)
+                    # count num available cars for region i
+                    horizon += np.sum(self.state['cars'][i, :(self.L+1)])
+                # increase epoch number, compute new period
+                self.state['epoch'] += 1
+                period = np.floor(self.state['epoch']/120).astype(int)
+                # sample new passengers
+                if period < 3:
+                    for i in range(self.R):
+                        num_arrivals = np.random.poisson(self.lambda_arr[period, i])
+                        trips = np.random.multinomial(num_arrivals, self.P[period,i,:]).astype(int)
+                        for j in range(self.R):
+                            self.state['passengers'][i,j] += trips[j]
+                
+            new_origin = 0
+            while np.sum(self.state['cars'][new_origin, :(self.L+1)]) == 0:
+                new_origin += 1
+                if new_origin >= self.R:
+                    break
+            self.state['origin'] = min(new_origin, self.R-1)
+            
         
         
         if epoch >= self.H:

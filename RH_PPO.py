@@ -17,8 +17,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 import math
+import torch
+torch.manual_seed(0)
+np.random.seed(0)
+random.seed(0)
+
+
 wandb.login(key='74f441f8a5ff9046ae53fad3d92540a168c6bc83')
 wandb.init(project='RL', tags=['FirstTrail'])
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+os.environ["WANDB_MODE"] = "offline"
 
 module_path = os.path.abspath(os.path.join('.'))
 sys.path.append(module_path + "/RideHailing/envs/")
@@ -31,16 +39,18 @@ env = gym.make('RideHailing-v0', config=CONFIG)
 PPO_config = {
     #"initial_theta": 
     "J": 75, # num policy iterations
-    "K": 1, # num episodes in Monte Carlo
+    "K": 20, # num episodes in Monte Carlo
     "clipping": 0.2,
-    "LR_policy": 0.00005, # learning rate for policy network
-    "LR_value": 0.0001, # learning rate for value network
-    "num_epochs_policy": 3,
-    "num_epochs_value": 10,
+    "LR_policy": 0.5, # learning rate for policy network
+    "LR_value": 0.5, # learning rate for value network
+    "num_epochs_policy": 1,
+    "num_epochs_value": 1,
     "target_KL": 0.012,
     "L2_coeff": 0.005,
-    "batch_size": 4096,
-    "batch_size_policy": 8, # CHECK
+    "batch_size": 512,
+    'step': 20,
+    'gamma': 1,
+    "batch_size_policy": 32, # CHECK
     "num_eval_iters": 4
     }
 
@@ -60,7 +70,7 @@ def run_PPO(env, config = PPO_config):
     
     sim_output = []
 
-    old_policy_model = PolicyNet(456, 6, 461, 44, 5)
+    old_policy_model = PolicyNet(456, 6, 461, 2, 5).to(device)
     
     policy_training_performance = []
 
@@ -90,7 +100,7 @@ def run_PPO(env, config = PPO_config):
 
         # STEP 3: learn func approximator for value
         # TODO: do not hardcode layer sizes
-        value_model = ValueNet(456, 6, 461, 44, 5)
+        value_model = ValueNet(456, 6, 461, 2, 5).to(device)
         value_model.train()
         
         # normalize data and get mean, std before passing into training func
@@ -125,8 +135,7 @@ def run_PPO(env, config = PPO_config):
         policy_model = copy.deepcopy(old_policy_model)
 
         policy_model.train()
-        new_policy_model = train_policy_network(policy_model, old_policy_model, A_hat, j, state_part_mean, state_part_std)
-        policy_model = copy.deepcopy(new_policy_model)
+        policy_model = train_policy_network(policy_model, old_policy_model, A_hat, j, state_part_mean, state_part_std)
     
         print('Policy model trained; starting evaluation')
     
@@ -137,7 +146,7 @@ def run_PPO(env, config = PPO_config):
         
         print('Policy iteration {} evaluation result'.format(j), evaluation_output)
         print('========================================')
-        wandb.log({'policy_iteration': j, 'time_iteration': time.time() - start_policy_iteration_time, 'rec_met_mean': evaluation_output[0], 'rec_met_std': evaluation_output[1]})
+        wandb.log({'time_iteration': time.time() - start_policy_iteration_time, 'rec_met_mean': evaluation_output[0], 'rec_met_std': evaluation_output[1]})
         old_policy_model = copy.deepcopy(policy_model)
       
     # return data for learning curve
@@ -176,25 +185,25 @@ def run_ridehailing_sims(env, policy_model, num_episodes = PPO_config['K'], eval
                 print('Episode {}, epoch {}, SDM clock {}, origin{}'.format(k, env.state['epoch'], env.state['SDM_clock'], env.state['origin']))
         
             state_input = np.concatenate((np.asarray([env.state['epoch']]), env.state['cars'].reshape(-1), env.state['do_nothing'].reshape(-1), env.state['passengers'].reshape(-1)))
-
-            action_prob_dist = policy_model(torch.tensor(state_input).float())
+            state_input = torch.tensor(state_input).float().to(device)
+            action_prob_dist = policy_model(state_input)
             action_prob_dist_2D = action_prob_dist.reshape((5,5))
             # Question: why we don't make action_prob_dist as 5 dim? 
             dest_taken = random.choices(range(5), action_prob_dist_2D[env.state['origin']])[0] #25 dim -> scalar
+            # print('Dest_taken: {}'.format(dest_taken))
             # map the action_taken (0,..,24) to [origin,dest] to feed into simulator
             #action_taken_tuple = np.array([action_taken//5, action_taken%5])
             action_tuple = np.array([env.state['origin'], dest_taken])
             new_state, reward, episode_over, _ = env.step(action_tuple)
             cum_reward += reward
-            
+            wandb.log({'cum_reward': cum_reward})
+
             action_taken_idx = 5 * env.state['origin'] + dest_taken
             state_info = np.concatenate((np.asarray([new_state['epoch']]), new_state['cars'].reshape(-1), new_state['do_nothing'].reshape(-1), new_state['passengers'].reshape(-1)))
             sim_output[k].append([state_info, action_taken_idx, reward])
             #state_array = np.vstack((state_array, state_info))
-        
+        print('cumulated reward: {}'.format(cum_reward))
         del sim_output[k][0]
-        
-        
         unfilled_requests = env.state['unfilled_requests']
         frac_requests_met.append(cum_reward/(cum_reward+unfilled_requests))        
         
@@ -291,8 +300,8 @@ def compute_A_hat(sim_output, value_model,
                 #x_train_norm = (curr_state_tensor-x_mean)/ x_std
                 #y_train_norm = (next_state_tensor-y_mean)/ y_std
 
-                curr_state_value_est = value_model(curr_state_norm_input)
-                next_state_value_est = value_model(next_state_norm_input)
+                curr_state_value_est = value_model(curr_state_norm_input.to(device))
+                next_state_value_est = value_model(next_state_norm_input.to(device))
         
                 adv_est = sim_output[k][i][2] + next_state_value_est - curr_state_value_est
               
@@ -382,6 +391,7 @@ class PolicyNet(nn.Module):
         # TODO: check the way we deal with embedding is correct
         #import pdb; pdb.set_trace()
         if x.dim() == 1:
+            # import pdb; pdb.set_trace()
             epoch_embedded = self.embedding_layer(x[0].to(torch.int64))
             out = torch.cat([epoch_embedded, torch.tensor(x[1:])])
             out = self.hidden_layers_stack(out)
@@ -416,6 +426,7 @@ def train_value_network(x_train, y_train, value_model, config = PPO_config):
     """
     value_loss = torch.nn.MSELoss()
     value_optimizer = torch.optim.Adam(value_model.parameters(), lr = config['LR_value'])
+    value_scheduler = torch.optim.lr_scheduler.StepLR(value_optimizer, step_size=config['step'], gamma=config['gamma'])
 
     #normalizer = Scaler(x_train, y_train)
     #x_std, x_mean = normalizer.getx()
@@ -433,21 +444,30 @@ def train_value_network(x_train, y_train, value_model, config = PPO_config):
         #y_train_norm_shuff = y_train_norm[random_idx]
         x_train_norm_shuff = x_train[random_idx,]
         y_train_norm_shuff = y_train[random_idx]
-        
+
+         
         
         # forward and backward passes in batches
         for batch in range(math.ceil(x_train.size()[0] / batch_size)):
             # get the current batch of training data (x and y)
-            x_train_norm_batch = x_train_norm_shuff[(batch*batch_size):((batch+1)*batch_size),]
+            x_train_norm_batch = x_train_norm_shuff[(batch*batch_size):((batch+1)*batch_size),].to(device)
             #import pdb; pdb.set_trace()
-            y_train_norm_batch = y_train_norm_shuff[(batch*batch_size):((batch+1)*batch_size)]
+            y_train_norm_batch = y_train_norm_shuff[(batch*batch_size):((batch+1)*batch_size)].to(device)
             
             value_optimizer.zero_grad()
-            y_train_pred_norm = value_model(x_train_norm_batch)
-            loss = value_loss(y_train_pred_norm.squeeze(), y_train_norm_batch)
+            #  [p for p in policy_model.parameters()]  [0]
+            l2_norm = sum(pp.pow(2.0).sum() for pp in [p for p in value_model.parameters()][0])
+            import pdb; pdb.set_trace;
+            y_train_pred_norm = value_model(x_train_norm_batch) 
+
+            loss = value_loss(y_train_pred_norm.squeeze(), y_train_norm_batch) + l2_norm * config['L2_coeff']  
+
             loss.backward()
             value_optimizer.step()
-        wandb.log({"epoch_value_net": epoch, "loss_value_net": loss})
+            value_scheduler.step()
+
+            print("loss in batch{} epoch{}: {}".format(batch, epoch, loss))
+            wandb.log({"loss_value_net": loss})
     
     return value_model
 
@@ -476,7 +496,8 @@ def train_policy_network(policy_model, old_policy_model, A_hat, j, state_part_me
     learning_rate = np.amax([0.01, 1-j/config['J']]) * config['LR_policy']
     #PPO_loss = compute_surr_objective(A_hat, old_policy_model, policy_model, j, PPO_config)        
     policy_optimizer = torch.optim.Adam(policy_model.parameters(), lr = learning_rate)
-    
+    policy_scheduler = torch.optim.lr_scheduler.StepLR(policy_optimizer, step_size=config['step'], gamma=config['gamma'])
+
     
     for epoch in range(config['num_epochs_policy']):
         
@@ -487,13 +508,25 @@ def train_policy_network(policy_model, old_policy_model, A_hat, j, state_part_me
         batch_size = config['batch_size_policy']
         
         for batch in range(math.ceil(len(A_hat) / batch_size)):
-            print('training policy epoch {}, batch {}'.format(epoch, batch))
 
             policy_optimizer.zero_grad()
-            loss = compute_surr_objective(A_hat[(batch*batch_size):((batch+1)*batch_size)], old_policy_model, policy_model, j, state_part_mean, state_part_std, PPO_config)
+
+            l2_norm = sum(pp.pow(2.0).sum() for pp in [p for p in policy_model.parameters()][0])
+
+
+            loss_unreg, kl_estimate = compute_surr_objective(A_hat[(batch*batch_size):((batch+1)*batch_size)], old_policy_model.to(device), policy_model.to(device), j, state_part_mean, state_part_std, PPO_config)
+            wandb.log({"kl_estimate": kl_estimate.cpu()})
+            print("kl_estimate for batch {}: {}".format(batch, kl_estimate))
+            if kl_estimate < config['target_KL']:
+                # stop training -- is this right?
+                break
+            loss = -loss_unreg + l2_norm* config['L2_coeff'] 
             loss.backward(retain_graph = True)
             policy_optimizer.step()
-            wandb.log({"batch_policy_network": batch, "loss_policy_network": loss})
+            policy_scheduler.step()
+            print("policy loss in batch{} epoch{}: {}".format(batch, epoch, loss))
+
+            wandb.log({"loss_policy_network": loss.cpu()})
          
     return policy_model
 
@@ -531,10 +564,13 @@ def compute_surr_objective(A_hat, old_policy_model, policy_model, j, state_part_
             return c
     
     clipping_param = np.amax([0.01, (1-j/config['J'])*config['clipping']])
+    print("Clipping parameters: {}".format(clipping_param))
     #K = PPO_config['K']
     #assert(K==len(A_hat))
-
+    policy_model.to(device)
+    old_policy_model.to(device)
     surr_objective = 0
+    kl_est_list = []
     for k in range(len(A_hat)):
         for i in range(len(A_hat[k])):
             # CHECK: if the action is an integer corresponding to the state
@@ -545,13 +581,19 @@ def compute_surr_objective(A_hat, old_policy_model, policy_model, j, state_part_
                 curr_state_norm_input = torch.cat((curr_state[0].unsqueeze(0), (curr_state[1:]-state_part_mean)/state_part_std))
 
             curr_state_norm_input[np.isnan(curr_state_norm_input)] = 0
+            curr_state_norm_input.to(device)
             curr_action = A_hat[k][i][1]
-            r_theta_ksi = policy_model(curr_state_norm_input)[curr_action] / old_policy_model(curr_state_norm_input)[curr_action]  
+
+            r_theta_ksi = policy_model(curr_state_norm_input.to(device))[curr_action] / old_policy_model(curr_state_norm_input.to(device))[curr_action]  
+            r_theta_ksi_num = r_theta_ksi.cpu().detach().numpy()
+            single_est_from_r = r_theta_ksi_num-1-np.log(r_theta_ksi_num)
+            kl_est_list.append(single_est_from_r)
             A_hat_ksi = A_hat[k][i][2] # Estimate the A_hat
             surr_objective += min(r_theta_ksi * A_hat_ksi, clip(r_theta_ksi, clipping_param) * A_hat_ksi)
     surr_objective /= len(A_hat)
+    kl_est = np.mean(np.asarray(kl_est_list))
 
-    return surr_objective
+    return surr_objective, kl_est
 
 
 
